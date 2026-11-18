@@ -21,10 +21,12 @@ properties:
     const: qcom,sm6115-mdss
 
   clocks:
+    minItems: 3
     items:
       - description: Display AHB clock from gcc
       - description: Display AXI clock
       - description: Display core clock
+      - description: Display AHB clock from dispcc
 
   iommus:
     maxItems: 2
@@ -92,7 +94,8 @@ examples:
         power-domains = <&dispcc MDSS_GDSC>;
         clocks = <&gcc GCC_DISP_AHB_CLK>,
                  <&gcc GCC_DISP_HF_AXI_CLK>,
-                 <&dispcc DISP_CC_MDSS_MDP_CLK>;
+                 <&dispcc DISP_CC_MDSS_MDP_CLK>,
+                 <&dispcc DISP_CC_MDSS_AHB_CLK>;
 
         interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>;
         interrupt-controller;

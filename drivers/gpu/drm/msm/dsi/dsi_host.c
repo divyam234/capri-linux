@@ -1301,9 +1301,11 @@ void msm_dsi_tx_buf_free(struct mipi_dsi_host *host)
 		msm_host->vm = NULL;
 	}
 
-	if (msm_host->tx_buf)
+	if (msm_host->tx_buf) {
 		dma_free_coherent(dev->dev, msm_host->tx_size, msm_host->tx_buf,
 			msm_host->tx_buf_paddr);
+		msm_host->tx_buf = NULL;
+	}
 }
 
 void *dsi_tx_buf_get_6g(struct msm_dsi_host *msm_host)
@@ -1428,7 +1430,8 @@ int dsi_dma_base_get_6g(struct msm_dsi_host *msm_host, uint64_t *dma_base)
 	if (!dma_base)
 		return -EINVAL;
 
-	return msm_gem_get_and_pin_iova(msm_host->tx_gem_obj,
+	/* The command buffer stays pinned from allocation until teardown. */
+	return msm_gem_get_iova(msm_host->tx_gem_obj,
 				priv->kms->vm, dma_base);
 }
 

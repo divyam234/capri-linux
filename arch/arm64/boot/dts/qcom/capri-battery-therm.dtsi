@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * Capri battery 10 kOhm NTC (beta = 3435 K), PMI632 30 kOhm pull-up.
+ * This table is the generic-adc-thermal voltage/temperature calibration
+ * also used by Fairphone's Qualcomm battery-temperature DTS patch series.
+ *
+ * Processed ADC5 0x2a readings are in microvolts, NOT degrees Celsius.
+ * The generic-adc-thermal IIO provider converts them to millidegrees C.\n * LUT voltages are multiplied by 1000 from their published mV values.
+ */
+/ {
+	capri_battery_therm: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		#io-channel-cells = <0>;
+		io-channels = <&pmi632_adc ADC5_BAT_THERM_30K_PU>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-40000) 1673000
+			(-38000) 1649000
+			(-36000) 1623000
+			(-34000) 1596000
+			(-32000) 1566000
+			(-30000) 1535000
+			(-28000) 1502000
+			(-26000) 1467000
+			(-24000) 1430000
+			(-22000) 1392000
+			(-20000) 1352000
+			(-18000) 1311000
+			(-16000) 1269000
+			(-14000) 1226000
+			(-12000) 1182000
+			(-10000) 1138000
+			 (-8000) 1093000
+			 (-6000) 1049000
+			 (-4000) 1004000
+			 (-2000) 960000
+			       0 917000
+			    2000 874000
+			    4000 832000
+			    6000 791000
+			    8000 752000
+			   10000 713000
+			   12000 676000
+			   14000 640000
+			   16000 606000
+			   18000 573000
+			   20000 541000
+			   22000 511000
+			   24000 483000
+			   26000 455000
+			   28000 430000
+			   30000 405000
+			   32000 382000
+			   34000 360000
+			   36000 340000
+			   38000 320000
+			   40000 302000
+			   42000 285000
+			   44000 269000
+			   46000 253000
+			   48000 239000
+			   50000 225000
+			   52000 213000
+			   54000 201000
+			   56000 190000
+			   58000 179000
+			   60000 169000
+			   62000 160000
+			   64000 152000
+			   66000 143000
+			   68000 136000
+			   70000 128000
+			   72000 122000
+			   74000 115000
+			   76000 109000
+			   78000 104000
+			   80000 98000
+			   82000 93000
+			   84000 89000
+			   86000 84000
+			   88000 80000
+			   90000 76000
+			   92000 73000
+			   94000 69000
+			   96000 66000
+			   98000 63000>;
+	};
+
+	thermal-zones {
+		capri-batt-therm {
+			polling-delay-passive = <1000>;
+			polling-delay = <2000>;
+			thermal-sensors = <&capri_battery_therm>;
+			trips {
+				battery_warm: warm {
+					temperature = <45000>;
+					hysteresis = <3000>;
+					type = "passive";
+				};
+				battery_hot: hot {
+					temperature = <50000>;
+					hysteresis = <5000>;
+					type = "hot";
+				};
+			};
+		};
+	};
+};
+
+&pmi632_qgauge {
+	monitored-battery = <&capri_battery>;
+	io-channels = <&capri_battery_therm>;
+	io-channel-names = "batt-therm";
+	power-supplies = <&pmi632_charger>;
+	status = "okay";
+};

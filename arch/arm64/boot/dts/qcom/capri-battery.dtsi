@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/* Factory JK50-SWD-4850MAH battery profile at 25 C. */
+/ {
+ capri_battery: battery {
+  compatible = "simple-battery";
+  device-chemistry = "lithium-ion";
+  voltage-min-design-microvolt = <3200000>;
+  voltage-max-design-microvolt = <4400000>;
+  charge-full-design-microamp-hours = <4850000>;
+  constant-charge-current-max-microamp = <500000>;
+  constant-charge-voltage-max-microvolt = <4400000>;
+  charge-term-current-microamp = <100000>;
+  ocv-capacity-celsius = <25>;
+  ocv-capacity-table-0 =
+   <4381900 100>,
+   <4359200 98>,
+   <4335800 96>,
+   <4311600 94>,
+   <4287100 92>,
+   <4263100 90>,
+   <4239300 88>,
+   <4215800 86>,
+   <4192700 84>,
+   <4170000 82>,
+   <4147400 80>,
+   <4125600 78>,
+   <4106000 76>,
+   <4088800 74>,
+   <4069300 72>,
+   <4042400 70>,
+   <4016100 68>,
+   <3999900 66>,
+   <3987900 64>,
+   <3974500 62>,
+   <3959600 60>,
+   <3942100 58>,
+   <3916000 56>,
+   <3886800 54>,
+   <3871700 52>,
+   <3863700 50>,
+   <3856400 48>,
+   <3848400 46>,
+   <3840700 44>,
+   <3833600 42>,
+   <3827000 40>,
+   <3820700 38>,
+   <3815000 36>,
+   <3809600 34>,
+   <3805000 32>,
+   <3800700 30>,
+   <3796400 28>,
+   <3792400 26>,
+   <3787200 24>,
+   <3779000 22>,
+   <3768400 20>,
+   <3757200 18>,
+   <3744600 16>,
+   <3729500 14>,
+   <3715100 12>,
+   <3706100 10>,
+   <3703200 9>,
+   <3701400 8>,
+   <3699600 7>,
+   <3695300 6>,
+   <3673800 5>,
+   <3631300 4>,
+   <3574300 3>,
+   <3496200 2>,
+   <3375100 1>,
+   <3000000 0>;
+ };
+};
+
+&pmi632_adc {
+	/*
+	 * Motorola Capri uses a 10 kOhm NTC, read through the
+	 * PMI632 30 kOhm pull-up channel. Retain the ADC for the
+	 * future native fuel-gauge/JEITA implementation.
+	 */
+	channel@2a {
+		reg = <ADC5_BAT_THERM_30K_PU>;
+		qcom,pre-scaling = <1 1>;
+		qcom,hw-settle-time = <200>;
+		qcom,ratiometric;
+		label = "batt_therm_30k";
+	};
+};
+
+&spmi_bus {
+	pmic@2 {
+		/*
+		 * Linux 7.2 qcom_smbx now supports the SMB5 generation.
+		 * These interrupts match the PMI632 vendor hardware DT.
+		 *
+		 * PMI632's charging enable is conditioned on the native QGauge,
+		 * thermal cutoff and watchdog. Default charging needs no boot args.
+		 */
+		pmi632_charger: charger@1000 {
+			compatible = "qcom,pmi632-charger";
+			reg = <0x1000>;
+
+			interrupts = <0x2 0x13 0x4 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x12 0x2 IRQ_TYPE_EDGE_BOTH>,
+				     <0x2 0x16 0x1 IRQ_TYPE_EDGE_RISING>,
+				     <0x2 0x13 0x7 IRQ_TYPE_EDGE_RISING>;
+			interrupt-names = "usb-plugin", "bat-ov",
+					  "wdog-bark", "usbin-icl-change";
+
+			io-channels = <&pmi632_adc ADC5_USB_IN_I>,
+				      <&pmi632_adc ADC5_USB_IN_V_16>;
+			io-channel-names = "usbin_i", "usbin_v";
+			monitored-battery = <&capri_battery>;
+			status = "okay";
+		};
+	};
+};

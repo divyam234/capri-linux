@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * Moto G10 Power SKU5 (ATL4864356) from the Motorola stock 6000-mAh
+ * charge overlay and qg-batterydata-atl4864356_5640mAh.dtsi.
+ *
+ * The 25 C OCV table is an approximate charge indicator, not a replacement
+ * for Motorola's temperature-dependent factory fuel-gauge calibration.
+ * The native Qualcomm QGauge and SMB5 charger are shared with the G10.
+ * Charging policy must be validated again after rebasing to Linux 7.4.
+ */
+&capri_battery {
+	charge-full-design-microamp-hours = <6000000>;
+	voltage-max-design-microvolt = <4450000>;
+	constant-charge-current-max-microamp = <3000000>;
+	constant-charge-voltage-max-microvolt = <4450000>;
+	charge-term-current-microamp = <290000>;
+	ocv-capacity-celsius = <25>;
+	ocv-capacity-table-0 =
+		<4434000 100>,
+		<4408700 98>,
+		<4386300 96>,
+		<4364900 94>,
+		<4343000 92>,
+		<4319600 90>,
+		<4295400 88>,
+		<4270800 86>,
+		<4245700 84>,
+		<4221000 82>,
+		<4196500 80>,
+		<4172400 78>,
+		<4148600 76>,
+		<4125500 74>,
+		<4103300 72>,
+		<4081900 70>,
+		<4061200 68>,
+		<4041200 66>,
+		<4022400 64>,
+		<4005200 62>,
+		<3987800 60>,
+		<3969200 58>,
+		<3949600 56>,
+		<3926700 54>,
+		<3901500 52>,
+		<3885400 50>,
+		<3875700 48>,
+		<3867100 46>,
+		<3857900 44>,
+		<3849000 42>,
+		<3841200 40>,
+		<3833900 38>,
+		<3827800 36>,
+		<3822500 34>,
+		<3817700 32>,
+		<3813200 30>,
+		<3808700 28>,
+		<3804200 26>,
+		<3799400 24>,
+		<3792100 22>,
+		<3780800 20>,
+		<3768100 18>,
+		<3754300 16>,
+		<3738500 14>,
+		<3721600 12>,
+		<3710600 10>,
+		<3707900 9>,
+		<3705600 8>,
+		<3703700 7>,
+		<3700400 6>,
+		<3682100 5>,
+		<3639700 4>,
+		<3582700 3>,
+		<3505200 2>,
+		<3386400 1>,
+		<3000000 0>;
+};

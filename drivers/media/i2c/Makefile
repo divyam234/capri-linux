@@ -179,3 +179,5 @@ obj-$(CONFIG_VIDEO_VPX3220) += vpx3220.o
 obj-$(CONFIG_VIDEO_WM8739) += wm8739.o
 obj-$(CONFIG_VIDEO_WM8775) += wm8775.o
 obj-$(CONFIG_VIDEO_INTEL_CVS) += cvs/
+obj-$(CONFIG_VIDEO_S5K4H7) += s5k4h7.o
+obj-$(CONFIG_VIDEO_S5KGM1ST) += s5kgm1st.o

@@ -154,6 +154,10 @@ struct qcom_geni_serial_port {
 	bool manual_flow;
 	bool tx_kick_enabled;
 	struct irq_work tx_kick;
+	bool ibs_runtime_pm;
+	bool rx_idle; /* The startup PM reference has been released. */
+	bool rx_quiesced; /* RX stopped and main IRQ masked for runtime idle. */
+
 	struct qcom_geni_private_data private_data;
 	const struct qcom_geni_device_data *dev_data;
 	struct notifier_block panic_nb;
@@ -237,6 +241,9 @@ static unsigned int qcom_geni_serial_get_mctrl(struct uart_port *uport)
 	unsigned int mctrl = TIOCM_DSR | TIOCM_CAR;
 	u32 geni_ios = 0;
 
+	if (READ_ONCE(to_dev_port(uport)->rx_quiesced))
+		return mctrl;
+
 	if (uart_console(uport)) {
 		mctrl |= TIOCM_CTS;
 	} else {
@@ -261,6 +268,9 @@ static void qcom_geni_serial_set_mctrl(struct uart_port *uport,
 
 	if (mctrl & TIOCM_LOOP)
 		port->loopback = RX_TX_CTS_RTS_SORTED;
+
+	if (port->rx_quiesced)
+		return;
 
 	if (port->manual_flow && !(mctrl & TIOCM_RTS) && !uport->suspended)
 		uart_manual_rfr = UART_MANUAL_RFR_EN | UART_RFR_NOT_READY;
@@ -789,12 +799,18 @@ static void handle_rx_uart(struct uart_port *uport, u32 bytes)
 
 static unsigned int qcom_geni_serial_tx_empty(struct uart_port *uport)
 {
+	if (READ_ONCE(to_dev_port(uport)->rx_quiesced))
+		return TIOCSER_TEMT;
+
 	return !readl(uport->membase + SE_GENI_TX_FIFO_STATUS);
 }
 
 static void qcom_geni_serial_flush_buffer_dma(struct uart_port *uport)
 {
 	struct qcom_geni_serial_port *port = to_dev_port(uport);
+
+	if (port->rx_quiesced)
+		return;
 
 	qcom_geni_serial_stop_tx_dma(uport);
 	port->tx_remaining = 0;
@@ -804,6 +820,9 @@ static void qcom_geni_serial_flush_buffer_dma(struct uart_port *uport)
 static void qcom_geni_serial_stop_tx_dma(struct uart_port *uport)
 {
 	struct qcom_geni_serial_port *port = to_dev_port(uport);
+
+	if (port->rx_quiesced)
+		return;
 
 	if (qcom_geni_serial_main_active(uport))
 		__qcom_geni_serial_cancel_tx_cmd(uport);
@@ -1320,7 +1339,9 @@ static void qcom_geni_serial_shutdown(struct uart_port *uport)
 	qcom_geni_serial_cancel_tx_cmd(uport);
 	uart_port_unlock_irq(uport);
 
-	pm_runtime_put_sync(uport->dev);
+	if (!port->rx_idle)
+		pm_runtime_put_sync(uport->dev);
+	port->rx_idle = false;
 }
 
 static void qcom_geni_serial_flush_buffer_fifo(struct uart_port *uport)
@@ -1581,6 +1602,14 @@ static void qcom_geni_serial_set_termios(struct uart_port *uport,
 	writel(bits_per_char, uport->membase + SE_UART_RX_WORD_LEN);
 	writel(stop_bit_len, uport->membase + SE_UART_TX_STOP_BIT_LEN);
 
+	/* CTS gates TX in hardware; no CTS interrupt updates hw_stopped. */
+	scoped_guard(uart_port_lock_irqsave, uport) {
+		if (termios->c_cflag & CRTSCTS)
+			uport->status |= UPSTAT_AUTOCTS;
+		else
+			uport->status &= ~UPSTAT_AUTOCTS;
+	}
+
 	trace_geni_serial_set_termios(uport->dev, baud, bits_per_char,
 				      tx_trans_cfg, tx_parity_cfg, rx_trans_cfg,
 				      rx_parity_cfg, stop_bit_len);
@@ -1829,11 +1858,35 @@ static const struct uart_ops qcom_geni_console_pops = {
 #endif
 };
 
+/* The port mutex serializes ownership of the reference taken by startup. */
+static int qcom_geni_serial_set_rx_idle(struct uart_port *uport, bool idle)
+{
+	struct qcom_geni_serial_port *port = to_dev_port(uport);
+	int ret;
+
+	if (!port->ibs_runtime_pm)
+		return -EOPNOTSUPP;
+	if (port->rx_idle == idle)
+		return 0;
+	if (idle) {
+		port->rx_idle = true;
+		pm_runtime_mark_last_busy(uport->dev);
+		pm_runtime_put_autosuspend(uport->dev);
+	} else {
+		ret = pm_runtime_resume_and_get(uport->dev);
+		if (ret < 0)
+			return ret;
+		port->rx_idle = false;
+	}
+	return 0;
+}
+
 static const struct uart_ops qcom_geni_uart_pops = {
 	.tx_empty = qcom_geni_serial_tx_empty,
 	.stop_tx = qcom_geni_serial_stop_tx_dma,
 	.start_tx = qcom_geni_serial_start_tx_dma,
 	.start_rx = qcom_geni_serial_start_rx_dma,
+	.set_rx_idle = qcom_geni_serial_set_rx_idle,
 	.stop_rx = qcom_geni_serial_stop_rx_dma,
 	.set_termios = qcom_geni_serial_set_termios,
 	.startup = qcom_geni_serial_startup,
@@ -1986,16 +2039,27 @@ static int qcom_geni_serial_probe(struct platform_device *pdev)
 	if (ret)
 		goto error;
 
+	port->ibs_runtime_pm = !data->console && port->wakeup_irq > 0 &&
+		of_property_read_bool(pdev->dev.of_node, "motorola,capri-ibs-runtime-pm");
 	if (port->wakeup_irq > 0) {
 		device_init_wakeup(&pdev->dev, true);
-		ret = dev_pm_set_dedicated_wake_irq(&pdev->dev,
-						port->wakeup_irq);
+		if (port->ibs_runtime_pm)
+			ret = dev_pm_set_dedicated_wake_irq_reverse(&pdev->dev,
+							  port->wakeup_irq);
+		else
+			ret = dev_pm_set_dedicated_wake_irq(&pdev->dev,
+							  port->wakeup_irq);
 		if (ret) {
 			device_init_wakeup(&pdev->dev, false);
 			goto error;
 		}
 	}
 
+	if (port->ibs_runtime_pm) {
+		/* Keep RX awake long enough to receive a retried IBS wake byte. */
+		pm_runtime_set_autosuspend_delay(port->se.dev, 500);
+		pm_runtime_use_autosuspend(port->se.dev);
+	}
 	devm_pm_runtime_enable(port->se.dev);
 
 	ret = pm_runtime_resume_and_get(uport->dev);
@@ -2048,12 +2112,45 @@ static void qcom_geni_serial_remove(struct platform_device *pdev)
 	}
 }
 
+static void qcom_geni_serial_unquiesce_rx(struct uart_port *uport)
+{
+	struct qcom_geni_serial_port *port = to_dev_port(uport);
+
+	uart_port_lock_irq(uport);
+	port->rx_quiesced = false;
+	qcom_geni_serial_set_mctrl(uport, uport->mctrl);
+	qcom_geni_serial_start_rx(uport);
+	uart_port_unlock_irq(uport);
+	enable_irq(uport->irq);
+}
+
 static int __maybe_unused qcom_geni_serial_runtime_suspend(struct device *dev)
 {
 	struct qcom_geni_serial_port *port = dev_get_drvdata(dev);
 
-	return port->dev_data->power_off ?
-	       port->dev_data->power_off(&port->se) : 0;
+	struct uart_port *uport = &port->uport;
+	int ret = 0;
+
+	if (port->rx_idle && !port->rx_quiesced) {
+		disable_irq(uport->irq);
+		uart_port_lock_irq(uport);
+		if (port->tx_dma_addr || qcom_geni_serial_main_active(uport) ||
+		    !kfifo_is_empty(&uport->state->port.xmit_fifo)) {
+			uart_port_unlock_irq(uport);
+			enable_irq(uport->irq);
+			pm_runtime_mark_last_busy(dev);
+			return -EBUSY;
+		}
+		qcom_geni_serial_stop_rx(uport);
+		port->rx_quiesced = true;
+		uart_port_unlock_irq(uport);
+	}
+	if (port->dev_data->power_off)
+		ret = port->dev_data->power_off(&port->se);
+	if (ret && port->rx_quiesced)
+		qcom_geni_serial_unquiesce_rx(uport);
+
+	return ret;
 }
 
 static int __maybe_unused qcom_geni_serial_runtime_resume(struct device *dev)
@@ -2068,8 +2165,14 @@ static int __maybe_unused qcom_geni_serial_runtime_resume(struct device *dev)
 			return ret;
 	}
 
-	if (port->se.has_opp && port->clk_rate)
-		return dev_pm_opp_set_rate(uport->dev, port->clk_rate);
+	if (port->se.has_opp && port->clk_rate) {
+		ret = dev_pm_opp_set_rate(uport->dev, port->clk_rate);
+		if (ret)
+			return ret;
+	}
+
+	if (port->rx_quiesced)
+		qcom_geni_serial_unquiesce_rx(uport);
 
 	return 0;
 }
@@ -2090,7 +2193,19 @@ static int qcom_geni_serial_suspend(struct device *dev)
 		geni_icc_set_bw(&port->se);
 	}
 
+	/*
+	 * uart_suspend_port() sets uport->suspended before stopping RX/TX
+	 * and calling ->shutdown(). Our ISR returns IRQ_NONE once that flag
+	 * is set, so a pending level IRQ can storm before ->shutdown() gets
+	 * to disable it. Mask the IRQ across the whole transition.
+	 *
+	 * ->shutdown() owns a separate disable reference, balanced by
+	 * ->startup() on resume. Drop only our temporary reference here,
+	 * including when the serial core leaves a wake-capable port active.
+	 */
+	disable_irq(uport->irq);
 	ret = uart_suspend_port(private_data->drv, uport);
+	enable_irq(uport->irq);
 	if (ret)
 		return ret;
 
