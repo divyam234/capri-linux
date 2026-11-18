@@ -836,6 +836,18 @@ config VIDEO_S5C73M3
 	  This is a V4L2 sensor driver for Samsung S5C73M3
 	  8 Mpixel camera.
 
+config VIDEO_S5KGM1ST
+	tristate "Samsung S5KGM1ST sensor support"
+	select V4L2_CCI_I2C
+	help
+	  Support the Samsung S5KGM1ST MIPI CSI-2 sensor in 12 megapixel mode.
+
+config VIDEO_S5K4H7
+	tristate "Samsung S5K4H7 sensor support"
+	select V4L2_CCI_I2C
+	help
+	  Support the Samsung S5K4H7 8 megapixel MIPI CSI-2 sensor.
+
 config VIDEO_S5K3M5
 	tristate "Samsung S5K3M5 sensor support"
 	select V4L2_CCI_I2C

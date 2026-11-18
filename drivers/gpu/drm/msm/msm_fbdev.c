@@ -47,7 +47,11 @@ static void msm_fbdev_fb_destroy(struct fb_info *info)
 
 	drm_fb_helper_fini(helper);
 
-	msm_gem_put_vaddr(bo);
+	/* fbdev can outlive the KMS VM; release the object pins directly. */
+	msm_gem_lock(bo);
+	msm_gem_put_vaddr_locked(bo);
+	msm_gem_unpin_locked(bo);
+	msm_gem_unlock(bo);
 
 	drm_client_buffer_delete(helper->buffer);
 	drm_client_release(&helper->client);

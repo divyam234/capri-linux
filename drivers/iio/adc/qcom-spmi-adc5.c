@@ -517,6 +517,9 @@ struct adc5_channels {
 		  _pre, _scale)						\
 
 static const struct adc5_channels adc5_chans_pmic[ADC5_MAX_CHANNEL] = {
+	/* Voltage across the battery thermistor with the 30 kOhm pull-up. */
+	[ADC5_BAT_THERM_30K_PU] = ADC5_CHAN_VOLT("bat_therm_30k_pu", 0,
+					SCALE_HW_CALIB_DEFAULT)
 	[ADC5_REF_GND]		= ADC5_CHAN_VOLT("ref_gnd", 0,
 					SCALE_HW_CALIB_DEFAULT)
 	[ADC5_1P25VREF]		= ADC5_CHAN_VOLT("vref_1p25", 0,
@@ -542,6 +545,8 @@ static const struct adc5_channels adc5_chans_pmic[ADC5_MAX_CHANNEL] = {
 					SCALE_HW_CALIB_DEFAULT)
 	[ADC5_XO_THERM_100K_PU]	= ADC5_CHAN_TEMP("xo_therm", 0,
 					SCALE_HW_CALIB_XOTHERM)
+	[ADC5_BAT_THERM_100K_PU]	= ADC5_CHAN_TEMP("bat_therm", 0,
+					SCALE_HW_CALIB_THERM_100K_PULLUP)
 	[ADC5_BAT_ID_100K_PU]	= ADC5_CHAN_TEMP("bat_id", 0,
 					SCALE_HW_CALIB_DEFAULT)
 	[ADC5_AMUX_THM1_100K_PU] = ADC5_CHAN_TEMP("amux_thm1_100k_pu", 0,

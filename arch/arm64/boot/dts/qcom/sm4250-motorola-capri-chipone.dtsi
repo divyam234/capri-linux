@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* For Capri boards populated with the Chipone ICNF7332. */
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
+/ {
+	fingerprint: fingerprint {
+		compatible = "chipone,icnf7332";
+		interrupt-parent = <&tlmm>;
+		interrupts = <65 IRQ_TYPE_EDGE_RISING>;
+		reset-gpios = <&tlmm 104 GPIO_ACTIVE_LOW>;
+		vdd-supply = <&vreg_fingerprint>;
+		firmware-name = "fngap64";
+		pinctrl-0 = <&fingerprint_irq_default &fingerprint_reset_default>;
+		pinctrl-names = "default";
+	};
+
+	vreg_fingerprint: regulator-fingerprint {
+		compatible = "regulator-fixed";
+		regulator-name = "fingerprint";
+		gpio = <&tlmm 34 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		pinctrl-0 = <&fingerprint_enable_default>;
+		pinctrl-names = "default";
+	};
+};
+
+&tlmm {
+	fingerprint_enable_default: fingerprint-enable-default-state {
+		pins = "gpio34";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	fingerprint_irq_default: fingerprint-irq-default-state {
+		pins = "gpio65";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-disable;
+	};
+
+	fingerprint_reset_default: fingerprint-reset-default-state {
+		pins = "gpio104";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+	};
+};

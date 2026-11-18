@@ -157,6 +157,8 @@ struct qca_data {
 	struct work_struct ws_awake_device;
 	struct work_struct ws_rx_vote_off;
 	struct work_struct ws_tx_vote_off;
+	struct delayed_work ws_uart_idle;
+	bool uart_idle_enabled;
 	struct work_struct ctrl_memdump_evt;
 	struct delayed_work ctrl_memdump_timeout;
 	struct qca_memdump_info *qca_memdump;
@@ -385,6 +387,76 @@ static int send_hci_ibs_cmd(u8 cmd, struct hci_uart *hu)
 	return err;
 }
 
+static int qca_uart_active(struct qca_data *qca)
+{
+	int ret;
+
+	if (!qca->uart_idle_enabled)
+		return 0;
+	ret = serdev_device_set_rx_idle(qca->hu->serdev, false);
+	if (ret)
+		bt_dev_err(qca->hu->hdev, "UART resume failed: %d", ret);
+	return ret;
+}
+
+static bool qca_uart_can_idle(struct qca_data *qca)
+{
+	return !test_bit(QCA_IBS_DISABLED, &qca->flags) &&
+	       !test_bit(QCA_SUSPENDING, &qca->flags) &&
+	       !test_bit(QCA_BT_OFF, &qca->flags) &&
+	       !test_bit(QCA_SSR_TRIGGERED, &qca->flags) &&
+	       qca->tx_ibs_state == HCI_IBS_TX_ASLEEP &&
+	       qca->rx_ibs_state == HCI_IBS_RX_ASLEEP &&
+	       skb_queue_empty(&qca->txq) && skb_queue_empty(&qca->tx_wait_q);
+}
+
+static void qca_queue_uart_idle(struct qca_data *qca)
+{
+	unsigned long flags;
+
+	/* Pair the condition and enqueue with setup/suspend/close cancellation. */
+	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
+	if (qca->uart_idle_enabled &&
+	    !test_bit(QCA_IBS_DISABLED, &qca->flags) &&
+	    !test_bit(QCA_BT_OFF, &qca->flags) &&
+	    !test_bit(QCA_SUSPENDING, &qca->flags))
+		mod_delayed_work(qca->workqueue, &qca->ws_uart_idle,
+				 msecs_to_jiffies(200));
+	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
+}
+
+static void qca_block_uart_idle(struct qca_data *qca, unsigned int bit)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
+	set_bit(bit, &qca->flags);
+	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
+	cancel_delayed_work_sync(&qca->ws_uart_idle);
+}
+
+static void qca_wq_uart_idle(struct work_struct *work)
+{
+	struct qca_data *qca = container_of(to_delayed_work(work),
+					  struct qca_data, ws_uart_idle);
+	struct hci_uart *hu = qca->hu;
+	unsigned long flags;
+	bool idle;
+	int ret;
+
+	/* The ordered QCA workqueue serializes us with both wake workers. */
+	flush_work(&hu->write_work);
+	serdev_device_wait_until_sent(hu->serdev, CMD_TRANS_TIMEOUT);
+	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
+	idle = qca_uart_can_idle(qca) && !hu->tx_skb;
+	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
+	if (!idle)
+		return;
+	ret = serdev_device_set_rx_idle(hu->serdev, true);
+	if (ret)
+		bt_dev_err(hu->hdev, "UART idle failed: %d", ret);
+}
+
 static void qca_wq_awake_device(struct work_struct *work)
 {
 	struct qca_data *qca = container_of(work, struct qca_data,
@@ -394,6 +466,9 @@ static void qca_wq_awake_device(struct work_struct *work)
 	unsigned long flags;
 
 	BT_DBG("hu %p wq awake device", hu);
+
+	if (qca_uart_active(qca))
+		return;
 
 	/* Vote for serial clock */
 	serial_clock_vote(HCI_IBS_TX_VOTE_CLOCK_ON, hu);
@@ -425,6 +500,9 @@ static void qca_wq_awake_rx(struct work_struct *work)
 
 	BT_DBG("hu %p wq awake rx", hu);
 
+	if (qca_uart_active(qca))
+		return;
+
 	serial_clock_vote(HCI_IBS_RX_VOTE_CLOCK_ON, hu);
 
 	spin_lock_irqsave(&qca->hci_ibs_lock, flags);
@@ -453,6 +531,7 @@ static void qca_wq_serial_rx_clock_vote_off(struct work_struct *work)
 	BT_DBG("hu %p rx clock vote off", hu);
 
 	serial_clock_vote(HCI_IBS_RX_VOTE_CLOCK_OFF, hu);
+	qca_queue_uart_idle(qca);
 }
 
 static void qca_wq_serial_tx_clock_vote_off(struct work_struct *work)
@@ -470,6 +549,7 @@ static void qca_wq_serial_tx_clock_vote_off(struct work_struct *work)
 	 * It is up to the tty driver to pend the clocks off until tx done.
 	 */
 	serial_clock_vote(HCI_IBS_TX_VOTE_CLOCK_OFF, hu);
+	qca_queue_uart_idle(qca);
 }
 
 static void hci_ibs_tx_idle_timeout(struct timer_list *t)
@@ -603,6 +683,10 @@ static int qca_open(struct hci_uart *hu)
 	INIT_WORK(&qca->ws_awake_device, qca_wq_awake_device);
 	INIT_WORK(&qca->ws_rx_vote_off, qca_wq_serial_rx_clock_vote_off);
 	INIT_WORK(&qca->ws_tx_vote_off, qca_wq_serial_tx_clock_vote_off);
+	INIT_DELAYED_WORK(&qca->ws_uart_idle, qca_wq_uart_idle);
+	qca->uart_idle_enabled = hu->serdev &&
+		device_property_read_bool(&hu->serdev->dev,
+					 "motorola,capri-ibs-runtime-pm");
 	INIT_WORK(&qca->ctrl_memdump_evt, qca_controller_memdump);
 	INIT_DELAYED_WORK(&qca->ctrl_memdump_timeout,
 			  qca_controller_memdump_timeout);
@@ -620,6 +704,7 @@ static int qca_open(struct hci_uart *hu)
 	hu->priv = qca;
 
 	if (hu->serdev) {
+		set_bit(QCA_BT_OFF, &qca->flags);
 		qcadev = serdev_device_get_drvdata(hu->serdev);
 
 		switch (qcadev->btsoc_type) {
@@ -721,6 +806,9 @@ static int qca_close(struct hci_uart *hu)
 	struct qca_data *qca = hu->priv;
 
 	BT_DBG("hu %p qca close", hu);
+
+	qca_block_uart_idle(qca, QCA_SUSPENDING);
+	set_bit(QCA_IBS_DISABLED, &qca->flags);
 
 	/* BT core skips qca_hci_shutdown() which calls qca_power_off() on rmmod */
 	if (!test_bit(QCA_BT_OFF, &qca->flags))
@@ -1086,6 +1174,7 @@ static void qca_controller_memdump(struct work_struct *work)
 			 * start timer to handle this asynchronous activity.
 			 */
 			set_bit(QCA_IBS_DISABLED, &qca->flags);
+			qca_uart_active(qca);
 			set_bit(QCA_MEMDUMP_COLLECTION, &qca->flags);
 			dump = (void *) skb->data;
 			qca_memdump->ram_dump_size = __le32_to_cpu(dump->dump_size);
@@ -1427,9 +1516,10 @@ static int qca_send_power_pulse(struct hci_uart *hu, bool on)
 	serdev_device_write_flush(hu->serdev);
 	hci_uart_set_flow_control(hu, true);
 	ret = serdev_device_write_buf(hu->serdev, &cmd, sizeof(cmd));
-	if (ret < 0) {
+	if (ret != sizeof(cmd)) {
 		bt_dev_err(hu->hdev, "failed to send power pulse %02x", cmd);
-		return ret;
+		hci_uart_set_flow_control(hu, false);
+		return ret < 0 ? ret : -EIO;
 	}
 
 	serdev_device_wait_until_sent(hu->serdev, timeout);
@@ -1750,6 +1840,27 @@ static bool qca_wakeup(struct hci_dev *hdev)
 	return wakeup;
 }
 
+static void qca_port_close(struct hci_uart *hu)
+{
+	/* HCI_UART_PROTO_READY tracks whether the port is open, so a port
+	 * left closed by a failed qca_port_open() is not closed again by
+	 * hci_uart_close() or hci_uart_unregister_device().
+	 */
+	if (test_and_clear_bit(HCI_UART_PROTO_READY, &hu->flags))
+		hci_uart_serdev_close(hu);
+}
+
+static int qca_port_open(struct hci_uart *hu)
+{
+	int ret;
+
+	ret = hci_uart_serdev_open(hu);
+	if (!ret)
+		set_bit(HCI_UART_PROTO_READY, &hu->flags);
+
+	return ret;
+}
+
 static int qca_port_reopen(struct hci_uart *hu)
 {
 	int ret;
@@ -1759,8 +1870,8 @@ static int qca_port_reopen(struct hci_uart *hu)
 	 * Without this, we will have RTS and CTS synchronization
 	 * issues.
 	 */
-	serdev_device_close(hu->serdev);
-	ret = serdev_device_open(hu->serdev);
+	qca_port_close(hu);
+	ret = qca_port_open(hu);
 	if (ret) {
 		bt_dev_err(hu->hdev, "failed to open port");
 		return ret;
@@ -1784,12 +1895,12 @@ static int qca_regulator_init(struct hci_uart *hu)
 	qcadev = serdev_device_get_drvdata(hu->serdev);
 
 	if (!qcadev->bt_power->vregs_on) {
-		serdev_device_close(hu->serdev);
+		qca_port_close(hu);
 		ret = qca_regulator_enable(qcadev);
 		if (ret)
 			return ret;
 
-		ret = serdev_device_open(hu->serdev);
+		ret = qca_port_open(hu);
 		if (ret) {
 			bt_dev_err(hu->hdev, "failed to open port");
 			return ret;
@@ -1936,12 +2047,17 @@ static int qca_setup(struct hci_uart *hu)
 
 	clear_bit(QCA_ROM_FW, &qca->flags);
 	/* Patch downloading has to be done without IBS mode */
-	set_bit(QCA_IBS_DISABLED, &qca->flags);
+	qca_block_uart_idle(qca, QCA_IBS_DISABLED);
+	ret = qca_uart_active(qca);
+	if (ret)
+		return ret;
 
 	/* Enable controller to do both LE scan and BR/EDR inquiry
 	 * simultaneously.
 	 */
 	hci_set_quirk(hdev, HCI_QUIRK_SIMULTANEOUS_DISCOVERY);
+	if (soc_type == QCA_WCN3950)
+		hci_set_quirk(hdev, HCI_QUIRK_NONSTANDARD_LE_SCAN_REQ);
 
 	switch (soc_type) {
 	case QCA_QCA2066:
@@ -2039,6 +2155,7 @@ retry:
 	if (!ret) {
 		clear_bit(QCA_IBS_DISABLED, &qca->flags);
 		qca_debugfs_init(hdev);
+		qca_queue_uart_idle(qca);
 		hu->hdev->hw_error = qca_hw_error;
 		hu->hdev->reset = qca_reset;
 		if (hu->serdev) {
@@ -2065,8 +2182,8 @@ out:
 		if (retries < MAX_INIT_RETRIES) {
 			bt_dev_warn(hdev, "Retry BT power ON:%d", retries);
 			if (hu->serdev) {
-				serdev_device_close(hu->serdev);
-				ret = serdev_device_open(hu->serdev);
+				qca_port_close(hu);
+				ret = qca_port_open(hu);
 				if (ret) {
 					bt_dev_err(hdev, "failed to open port");
 					return ret;
@@ -2241,6 +2358,9 @@ static void qca_power_off(struct hci_uart *hu)
 	set_bit(QCA_IBS_DISABLED, &qca->flags);
 	qca_flush(hu);
 	spin_unlock_irqrestore(&qca->hci_ibs_lock, flags);
+	cancel_delayed_work_sync(&qca->ws_uart_idle);
+	if (hu->serdev_open)
+		qca_uart_active(qca);
 
 	/* Non-serdev device usually is powered by external power
 	 * and don't need additional action in driver for power down
@@ -2252,15 +2372,12 @@ static void qca_power_off(struct hci_uart *hu)
 	power = qcadev->bt_power;
 
 	switch (soc_type) {
+	case QCA_WCN3950:
 	case QCA_WCN3988:
 	case QCA_WCN3990:
 	case QCA_WCN3991:
 	case QCA_WCN3998:
-		/* Both of these write to the serial port which may have
-		 * already been closed by hci_uart_close(), which closes
-		 * the port if HCI_QUIRK_NON_PERSISTENT_SETUP is set.
-		 */
-		if (test_bit(HCI_UART_PROTO_READY, &hu->flags)) {
+		if (hu->serdev_open) {
 			host_set_baudrate(hu, 2400);
 			qca_send_power_pulse(hu, false);
 		}
@@ -2276,6 +2393,7 @@ static void qca_power_off(struct hci_uart *hu)
         }
 
 	switch (soc_type) {
+	case QCA_WCN3950:
 	case QCA_WCN3988:
 	case QCA_WCN3990:
 	case QCA_WCN3991:
@@ -2583,22 +2701,6 @@ static int qca_serdev_probe(struct serdev_device *serdev)
 static void qca_serdev_remove(struct serdev_device *serdev)
 {
 	struct qca_serdev *qcadev = serdev_device_get_drvdata(serdev);
-	struct qca_power *power = qcadev->bt_power;
-
-	switch (qcadev->btsoc_type) {
-	case QCA_WCN3988:
-	case QCA_WCN3990:
-	case QCA_WCN3991:
-	case QCA_WCN3998:
-	case QCA_WCN6750:
-	case QCA_WCN6855:
-	case QCA_WCN7850:
-		if (power->vregs_on)
-			qca_power_off(&qcadev->serdev_hu);
-		break;
-	default:
-		break;
-	}
 
 	hci_uart_unregister_device(&qcadev->serdev_hu);
 }
@@ -2665,7 +2767,12 @@ static int __maybe_unused qca_suspend(struct device *dev)
 	u8 cmd;
 	unsigned long wait_timeout = 0;
 
-	set_bit(QCA_SUSPENDING, &qca->flags);
+	qca_block_uart_idle(qca, QCA_SUSPENDING);
+	if (test_bit(HCI_UART_PROTO_READY, &hu->flags)) {
+		ret = qca_uart_active(qca);
+		if (ret)
+			goto error;
+	}
 
 	/* if BT SoC is running with default firmware then it does not
 	 * support in-band sleep
@@ -2775,6 +2882,7 @@ static int __maybe_unused qca_resume(struct device *dev)
 	struct qca_data *qca = hu->priv;
 
 	clear_bit(QCA_SUSPENDING, &qca->flags);
+	qca_queue_uart_idle(qca);
 
 	return 0;
 }

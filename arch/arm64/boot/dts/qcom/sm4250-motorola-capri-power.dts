@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * Moto G10 Power XT2127-4, Capri SKU5 DVT2.
+ * Board ID 0x500, 0xb200 from stock bengal-capri-dvt2-sku5-overlay.dts.
+ * EVT SKU5 uses a different ID (0x500, 0xa000); verify on hardware.
+ *
+ * Panel, touch, WCN3950 UART and regulators are inherited from the G10.
+ * The Power test unit needs its own Bluetooth BDADDR override.
+ */
+#include "sm4250-motorola-capri.dts"
+#include "capri-power-battery.dtsi"
+
+/ {
+	model = "Motorola Moto G10 Power (XT2127-4, SKU5 DVT2)";
+	qcom,board-id = <0x500 0xb200>;
+};
+
+/* From ~/dotfiles Capri Bluetooth patch. Unit-specific fallback address;
+ * do not reuse in a generic DTB distributed to multiple handsets.
+ */
+&uart3 {
+	bluetooth {
+		local-bd-address = [ 01 00 00 27 12 02 ];
+	};
+};

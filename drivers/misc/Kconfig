@@ -601,4 +601,16 @@ source "drivers/misc/keba/Kconfig"
 source "drivers/misc/amd-sbi/Kconfig"
 source "drivers/misc/rp1/Kconfig"
 source "drivers/misc/issei/Kconfig"
+config CHIPONE_FP
+	tristate "Chipone ICNF7332 secure-world sensor control"
+	depends on OF && GPIOLIB && REGULATOR
+	help
+	  Control power, reset and interrupts for a Chipone ICNF7332
+	  fingerprint sensor whose SPI bus is owned by secure firmware.
+	  Userspace communicates with that firmware through a separate TEE
+	  driver. This driver does not transfer images or match fingerprints.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called chipone-fp.
+
 endmenu

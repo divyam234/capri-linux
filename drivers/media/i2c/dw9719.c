@@ -68,6 +68,11 @@
 #define DW9761_VCM_PRELOAD		CCI_REG8(8)
 #define DW9761_DEFAULT_VCM_PRELOAD	0x73
 
+/* DW9767 settings from the Moto G10's mot_dw9767 module configuration. */
+#define DW9767_DEFAULT_MODE		0x0a
+#define DW9767_DEFAULT_VCM_FREQ		0x01
+#define DW9767_DEFAULT_VCM_PRELOAD		0x42
+
 #define DW9800K_DEFAULT_SAC		1
 #define DW9800K_MODE_SAC_SHIFT		6
 #define DW9800K_DEFAULT_VCM_FREQ		0x10
@@ -78,6 +83,7 @@ enum dw9719_model {
 	DW9718S,
 	DW9719,
 	DW9761,
+	DW9767,
 	DW9800K,
 };
 
@@ -86,6 +92,7 @@ struct dw9719_device {
 	struct device *dev;
 	struct regmap *regmap;
 	struct regulator *regulator;
+	struct regulator *io_regulator;
 	enum dw9719_model model;
 	u32 mode_low_bits;
 	u32 sac_mode;
@@ -107,6 +114,8 @@ static int dw9719_power_down(struct dw9719_device *dw9719)
 	 */
 	if (cci_write(dw9719->regmap, reg_pwr, DW9719_SHUTDOWN, NULL))
 		dev_err(dw9719->dev, "Error writing to power register\n");
+	if (dw9719->io_regulator)
+		regulator_disable(dw9719->io_regulator);
 	return regulator_disable(dw9719->regulator);
 }
 
@@ -120,6 +129,27 @@ static int dw9719_power_up(struct dw9719_device *dw9719, bool detect)
 	ret = regulator_enable(dw9719->regulator);
 	if (ret)
 		return ret;
+
+	if (dw9719->model == DW9767) {
+		ret = regulator_enable(dw9719->io_regulator);
+		if (ret) {
+			regulator_disable(dw9719->regulator);
+			return ret;
+		}
+		fsleep(1000);
+		cci_write(dw9719->regmap, reg_pwr, DW9719_SHUTDOWN, &ret);
+		cci_write(dw9719->regmap, reg_pwr, DW9719_STANDBY, &ret);
+		fsleep(1000);
+		cci_write(dw9719->regmap, DW9719_MODE,
+			  DW9767_DEFAULT_MODE, &ret);
+		cci_write(dw9719->regmap, DW9719_VCM_FREQ,
+			  DW9767_DEFAULT_VCM_FREQ, &ret);
+		cci_write(dw9719->regmap, DW9761_VCM_PRELOAD,
+			  DW9767_DEFAULT_VCM_PRELOAD, &ret);
+		if (ret)
+			dw9719_power_down(dw9719);
+		return ret;
+	}
 
 	/*
 	 * Need 100us to transition from SHUTDOWN to STANDBY.
@@ -188,6 +218,8 @@ props:
 	}
 
 	switch (dw9719->model) {
+	case DW9767:
+		break;
 	case DW9800K:
 		cci_write(dw9719->regmap, DW9719_CONTROL, DW9719_ENABLE_RINGING, &ret);
 		cci_write(dw9719->regmap, DW9719_MODE,
@@ -298,6 +330,11 @@ static int dw9719_resume(struct device *dev)
 
 		usleep_range(DW9719_CTRL_DELAY_US, DW9719_CTRL_DELAY_US + 10);
 	}
+	if (dw9719->model == DW9767) {
+		ret = dw9719_t_focus_abs(dw9719, current_focus);
+		if (ret)
+			goto err_power_down;
+	}
 
 	return 0;
 
@@ -332,7 +369,8 @@ static int dw9719_init_controls(struct dw9719_device *dw9719)
 
 	dw9719->ctrls.focus = v4l2_ctrl_new_std(&dw9719->ctrls.handler, ops,
 						V4L2_CID_FOCUS_ABSOLUTE, 0,
-						DW9719_MAX_FOCUS_POS, 1, 0);
+						DW9719_MAX_FOCUS_POS, 1,
+						dw9719->model == DW9767 ? 180 : 0);
 
 	if (dw9719->ctrls.handler.error) {
 		dev_err(dw9719->dev, "Error initialising v4l2 ctrls\n");
@@ -371,6 +409,12 @@ static int dw9719_probe(struct i2c_client *client)
 	if (IS_ERR(dw9719->regulator))
 		return dev_err_probe(&client->dev, PTR_ERR(dw9719->regulator),
 				     "getting regulator\n");
+	if (dw9719->model == DW9767) {
+		dw9719->io_regulator = devm_regulator_get(&client->dev, "vin");
+		if (IS_ERR(dw9719->io_regulator))
+			return dev_err_probe(&client->dev, PTR_ERR(dw9719->io_regulator),
+					     "getting I/O regulator\n");
+	}
 
 	v4l2_i2c_subdev_init(&dw9719->sd, client, &dw9719_ops);
 	dw9719->sd.flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -443,6 +487,7 @@ static const struct i2c_device_id dw9719_id_table[] = {
 	{ .name = "dw9718s", .driver_data = (kernel_ulong_t)DW9718S },
 	{ .name = "dw9719", .driver_data = (kernel_ulong_t)DW9719 },
 	{ .name = "dw9761", .driver_data = (kernel_ulong_t)DW9761 },
+	{ .name = "dw9767", .driver_data = (kernel_ulong_t)DW9767 },
 	{ .name = "dw9800k", .driver_data = (kernel_ulong_t)DW9800K },
 	{ }
 };
@@ -452,6 +497,7 @@ static const struct of_device_id dw9719_of_table[] = {
 	{ .compatible = "dongwoon,dw9718s", .data = (const void *)DW9718S },
 	{ .compatible = "dongwoon,dw9719", .data = (const void *)DW9719 },
 	{ .compatible = "dongwoon,dw9761", .data = (const void *)DW9761 },
+	{ .compatible = "dongwoon,dw9767", .data = (const void *)DW9767 },
 	{ .compatible = "dongwoon,dw9800k", .data = (const void *)DW9800K },
 	{ }
 };
